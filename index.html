@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>星际战机 - 修复增强版</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; overflow: hidden; background-color: #000; }
+        
+        /* 游戏画布 */
+        canvas { display: block; }
+
+        /* UI 界面容器 */
+        #uiLayer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            font-family: 'Arial', sans-serif; z-index: 10;
+        }
+
+        /* 菜单面板 */
+        .panel {
+            background: rgba(0, 0, 0, 0.8);
+            border: 2px solid #00d2ff;
+            padding: 30px 50px;
+            border-radius: 10px;
+            text-align: center;
+            pointer-events: auto;
+            color: white;
+            box-shadow: 0 0 20px rgba(0, 210, 255, 0.5);
+            display: none; /* JS控制显示 */
+        }
+
+        h1 { font-size: 36px; margin-bottom: 10px; color: #00d2ff; text-shadow: 0 0 10px #00d2ff; }
+        p { color: #ccc; margin-bottom: 25px; line-height: 1.5; }
+        
+        button {
+            background: linear-gradient(45deg, #00d2ff, #007bff);
+            border: none; padding: 12px 30px; color: white; font-size: 18px; border-radius: 25px;
+            cursor: pointer; transition: 0.2s; outline: none;
+        }
+        button:hover { transform: scale(1.1); box-shadow: 0 0 15px #00d2ff; }
+
+        /* 左上角分数 */
+        #hud {
+            position: absolute; top: 20px; left: 20px;
+            color: #ffcc00; font-size: 24px; font-weight: bold;
+            font-family: monospace; pointer-events: none; z-index: 5;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="hud">SCORE: 0</div>
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="uiLayer">
+        <div id="startPanel" class="panel" style="display: block;">
+            <h1>星际战机</h1>
+            <p>操作方式：<br>💻 鼠标移动 或 ⌨️ WASD/方向键<br>📱 触摸屏幕</p >
+            <button onclick="initGame()">开始任务</button>
+        </div>
+
+        <div id="gameOverPanel" class="panel">
+            <h1 style="color: #ff4444;">任务失败</h1>
+            <p id="finalScore">得分: 0</p >
+            <button onclick="initGame()">重新挑战</button>
+        </div>
+    </div>
+
+<script>
+    /**
+     * 核心修复说明：
+     * 1. 确保 width/height 在使用前已赋值。
+     * 2. 增加键盘状态监听 (keysPressed)。
+     * 3. 修复了 inputX/Y 初始化为 undefined/NaN 导致的绘图失败。
+     */
+
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const hud = document.getElementById('hud');
+    const startPanel = document.getElementById('startPanel');
+    const gameOverPanel = document.getElementById('gameOverPanel');
+
+    // 游戏全局变量
+    let width = window.innerWidth;
+    let height = window.innerHeight;
+    let isPlaying = false;
+    let score = 0;
+    let animationId;
+    let frameCount = 0;
+
+    // 实体容器
+    let player;
+    let bullets = [];
+    let enemies = [];
+    let particles = [];
+    let stars = [];
+
+    // 输入状态
+    let inputMode = 'mouse'; // 'mouse' or 'keyboard'
+    let mouseX = width / 2;
+    let mouseY = height - 100;
+    const keysPressed = {}; // 记录键盘按键
+
+    // --- 1. 初始化与响应式 ---
+    function resize() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+        // 如果正在使用鼠标模式，防止坐标超出边界
+        if(inputMode === 'mouse') {
+            mouseX = Math.min(mouseX, width);
+            mouseY = Math.min(mouseY, height);
+        }
+    }
+    window.addEventListener('resize', resize);
+    resize(); // 立即执行一次
+
+    // --- 2. 输入监听 (修复并增强) ---
+    
+    // 鼠标/触摸监听
+    window.addEventListener('mousemove', e => {
+        if (!isPlaying) return;
+        inputMode = 'mouse';
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+    });
+    
+    window.addEventListener('touchmove', e => {
+        if (!isPlaying) return;
+        e.preventDefault();
+        inputMode = 'mouse';
+        mouseX = e.touches[0].clientX;
+        mouseY = e.touches[0].clientY;
+    }, {passive: false});
+
+    // 键盘监听
+    window.addEventListener('keydown', e => {
+        keysPressed[e.key] = true;
+        if(isPlaying) inputMode = 'keyboard';
+    });
+    window.addEventListener('keyup', e => keysPressed[e.key] = false);
+
+    // --- 3. 游戏类定义 ---
+
+    class Player {
+        constructor() {
+            this.width = 40;
+            this.height = 50;
+            this.x = width / 2;
+            this.y = height - 100;
+            this.speed = 8; // 键盘控制时的移动速度
+        }
+
+        update() {
+            // 模式 A: 鼠标/触摸跟随 (平滑移动)
+            if (inputMode === 'mouse') {
+                // 使用缓动算法让飞机追逐鼠标位置
+                const dx = mouseX - this.x;
+                const dy = mouseY - this.y;
+                this.x += dx * 0.15;
+                this.y += dy * 0.15;
+            } 
+            // 模式 B: 键盘控制
+            else {
+                if (keysPressed['w'] || keysPressed['ArrowUp']) this.y -= this.speed;
+                if (keysPressed['s'] || keysPressed['ArrowDown']) this.y += this.speed;
+                if (keysPressed['a'] || keysPressed['ArrowLeft']) this.x -= this.speed;
+                if (keysPressed['d'] || keysPressed['ArrowRight']) this.x += this.speed;
+            }
+
+            // 边界限制
+            if (this.x < 20) this.x = 20;
+            if (this.x > width - 20) this.x = width - 20;
+            if (this.y < 20) this.y = 20;
+            if (this.y > height - 20) this.y = height - 20;
+        }
+
+        draw() {
+            ctx.fillStyle = '#00d2ff';
+            ctx.beginPath();
+            ctx.moveTo(this.x, this.y - this.height/2);
+            ctx.lineTo(this.x - this.width/2, this.y + this.height/2);
+            ctx.lineTo(this.x, this.y + this.height/4);
+            ctx.lineTo(this.x + this.width/2, this.y + this.height/2);
+            ctx.closePath();
+            ctx.fill();
+            
+            // 喷射火焰效果
+            ctx.fillStyle = `rgba(255, ${Math.random()*155+100}, 0, 0.8)`;
+            ctx.beginPath();
+            ctx.moveTo(this.x - 5, this.y + this.height/4);
+            ctx.lineTo(this.x + 5, this.y + this.height/4);
+            ctx.lineTo(this.x, this.y + this.height/4 + Math.random() * 20 + 10);
+            ctx.fill();
+        }
+    }
+
+    class Bullet {
+        constructor(x, y) {
+            this.x = x;
+            this.y = y;
+            this.width = 4;
+            this.height = 12;
+            this.dead = false;
+        }
+        update() {
+            this.y -= 12; // 子弹速度
+            if (this.y < 0) this.dead = true;
+        }
+        draw() {
+            ctx.fillStyle = '#ffcc00';
+            ctx.fillRect(this.x - this.width/2, this.y, this.width, this.height);
+        }
+    }
+
+    class Enemy {
+        constructor() {
+            this.size = Math.random() * 20 + 20;
+            this.x = Math.random() * (width - this.size * 2) + this.size;
+            this.y = -this.size;
+            this.speed = Math.random() * 3 + 2 + (score / 1000); // 难度随分数增加
+            this.dead = false;
+        }
+        update() {
+            this.y += this.speed;
+            if (this.y > height + this.size) this.dead = true;
+        }
+        draw() {
+            ctx.fillStyle = '#ff4444';
+            ctx.beginPath();
+            ctx.moveTo(this.x - this.size/2, this.y - this.size/2);
+            ctx.lineTo(this.x + this.size/2, this.y - this.size/2);
+            ctx.lineTo(this.x, this.y + this.size/2);
+            ctx.fill();
+        }
+    }
+
+    class Particle {
+        constructor(x, y, color) {
+            this.x = x;
+            this.y = y;
+            this.vx = (Math.random() - 0.5) * 8;
+            this.vy = (Math.random() - 0.5) * 8;
+            this.life = 1.0;
+            this.color = color;
+        }
+        update() {
+            this.x += this.vx;
+            this.y += this.vy;
+            this.life -= 0.04;
+        }
+        draw() {
+            ctx.globalAlpha = Math.max(0, this.life);
+            ctx.fillStyle = this.color;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, 3, 0, Math.PI*2);
+            ctx.fill();
+            ctx.globalAlpha = 1.0;
+        }
+    }
+
+    class Star {
+        constructor() {
+            this.reset();
+            this.y = Math.random() * height; // 初始随机分布
+        }
+        reset() {
+            this.x = Math.random() * width;
+            this.y = 0;
+            this.size = Math.random() * 2 + 0.5;
+            this.speed = Math.random() * 4 + 0.5;
+        }
+        update() {
+            this.y += this.speed;
+            if (this.y > height) this.reset();
+        }
+        draw() {
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+            ctx.fillRect(this.x, this.y, this.size, this.size);
+        }
+    }
+
+    // --- 4. 游戏流程控制 ---
+
+    function initGame() {
+        startPanel.style.display = 'none';
+        gameOverPanel.style.display = 'none';
+        
+        // 重置数据
+        score = 0;
+        hud.innerText = "SCORE: 0";
+        frameCount = 0;
+        
+        // 重置实体
+        bullets = [];
+        enemies = [];
+        particles = [];
+        
+        // 重新初始化玩家位置
+        resize(); // 确保宽高正确
+        player = new Player();
+        mouseX = width / 2; // 重置鼠标目标位置，防止开局飞机乱飞
+        mouseY = height - 100;
+        inputMode = 'mouse'; // 默认回鼠标模式
+
+        if (!isPlaying) {
+            isPlaying = true;
+            animate();
+        }
+    }
+
+    function gameOver() {
+        isPlaying = false;
+        document.getElementById('finalScore').innerText = `最终得分: ${score}`;
+        gameOverPanel.style.display = 'block';
+    }
+
+    // --- 5. 主循环 ---
+
+    function animate() {
+        if (!isPlaying) return;
+
+        // 清空画布
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, width, height);
+
+        // 1. 绘制背景星空
+        stars.forEach(s => { s.update(); s.draw(); });
+
+        // 2. 玩家逻辑
+        player.update();
+        player.draw();
+
+        // 3. 子弹逻辑 (每8帧发射)
+        if (frameCount % 8 === 0) {
+            bullets.push(new Bullet(player.x, player.y - 25));
+        }
+        bullets.forEach((b, i) => {
+            b.update();
+            b.draw();
+            if (b.dead) bullets.splice(i, 1);
+        });
+
+        // 4. 敌人生成
+        let spawnRate = score > 2000 ? 30 : 50;
+        if (frameCount % spawnRate === 0) {
+            enemies.push(new Enemy());
+        }
+
+        // 5. 敌人与碰撞逻辑
+        enemies.forEach((e, i) => {
+            e.update();
+            e.draw();
+
+            // 撞到玩家
+            const distPlayer = Math.hypot(player.x - e.x, player.y - e.y);
+            if (distPlayer < (player.width/2 + e.size/2 - 5)) {
+                gameOver();
+            }
+
+            // 被子弹击中
+            bullets.forEach((b, j) => {
+                const distBullet = Math.hypot(b.x - e.x, b.y - e.y);
+                if (distBullet < e.size/2 + b.width) {
+                    // 击杀
+                    e.dead = true;
+                    b.dead = true;
+                    score += 100;
+                    hud.innerText = `SCORE: ${score}`;
+                    // 产生粒子
+                    for(let k=0; k<5; k++) particles.push(new Particle(e.x, e.y, e.speed>5?'#ff0000':'#ff4444'));
+                }
+            });
+
+            if (e.dead) enemies.splice(i, 1);
+        });
+
+        // 6. 粒子特效
+        particles.forEach((p, i) => {
+            p.update();
+            p.draw();
+            if (p.life <= 0) particles.splice(i, 1);
+        });
+
+        frameCount++;
+        animationId = requestAnimationFrame(animate);
+    }
+
+    // --- 启动逻辑 ---
+    
+    // 初始化背景星星（仅执行一次）
+    for(let i=0; i<80; i++) stars.push(new Star());
+    
+    // 待机动画（在未开始游戏时运行）
+    function idleLoop() {
+        if (isPlaying) return;
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, width, height);
+        stars.forEach(s => { s.update(); s.draw(); });
+        requestAnimationFrame(idleLoop);
+    }
+    idleLoop();
+
+</script>
+</body>
+</html>
